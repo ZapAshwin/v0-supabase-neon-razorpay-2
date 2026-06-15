@@ -4,11 +4,17 @@ import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import Header from '@/components/header'
-import { createClient } from '@/lib/supabase/client'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Card } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
+import { Zap, Code, Settings, MessageSquare } from 'lucide-react'
 
 interface User {
   id: string
+  username: string
   email: string
+  plan_type: 'free' | 'pro' | 'pro_max'
+  created_at: string
 }
 
 interface Subscription {
@@ -27,6 +33,12 @@ interface ApiKey {
   is_active: boolean
 }
 
+const PLAN_LIMITS = {
+  free: { requestsPerDay: 100, requestsPerMin: 1, apiKeys: 1, costPerMonth: 0 },
+  pro: { requestsPerDay: 10000, requestsPerMin: 30, apiKeys: 10, costPerMonth: 29 },
+  pro_max: { requestsPerDay: 999999, requestsPerMin: 999, apiKeys: 100, costPerMonth: 99 },
+}
+
 export default function Dashboard() {
   const router = useRouter()
   const [user, setUser] = useState<User | null>(null)
@@ -34,63 +46,107 @@ export default function Dashboard() {
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [messages, setMessages] = useState<{ role: string; content: string }[]>([])
+  const [chatInput, setChatInput] = useState('')
+  const [chatLoading, setChatLoading] = useState(false)
 
   useEffect(() => {
     const checkAuth = async () => {
-      const supabase = createClient()
-      const {
-        data: { user },
-      } = await supabase.auth.getUser()
+      try {
+        const response = await fetch('/api/auth/user')
+        const data = await response.json()
 
-      if (!user) {
+        if (!data.user) {
+          router.push('/auth/login')
+          return
+        }
+
+        setUser(data.user)
+
+        // Fetch subscription
+        try {
+          const subResponse = await fetch('/api/subscription/get')
+          if (subResponse.ok) {
+            const subData = await subResponse.json()
+            setSubscription(subData.subscription)
+          }
+        } catch (err) {
+          console.error('Failed to fetch subscription:', err)
+        }
+
+        // Fetch API keys
+        try {
+          const keysResponse = await fetch('/api/keys/list')
+          if (keysResponse.ok) {
+            const keysData = await keysResponse.json()
+            setApiKeys(keysData.keys || [])
+          }
+        } catch (err) {
+          console.error('Failed to fetch API keys:', err)
+        }
+
+        setLoading(false)
+      } catch (err) {
+        console.error('Auth check failed:', err)
         router.push('/auth/login')
-        return
       }
-
-      setUser(user as unknown as User)
-
-      // Fetch subscription
-      try {
-        const response = await fetch('/api/subscription/get', {
-          headers: {
-            'Content-Type': 'application/json',
-          },
-        })
-
-        if (response.ok) {
-          const data = await response.json()
-          setSubscription(data.subscription)
-        }
-      } catch (err) {
-        console.error('Failed to fetch subscription:', err)
-      }
-
-      // Fetch API keys
-      try {
-        const response = await fetch('/api/keys/list', {
-          headers: {
-            'Content-Type': 'application/json',
-          },
-        })
-
-        if (response.ok) {
-          const data = await response.json()
-          setApiKeys(data.keys || [])
-        }
-      } catch (err) {
-        console.error('Failed to fetch API keys:', err)
-      }
-
-      loading && setLoading(false)
     }
 
     checkAuth()
-  }, [router, loading])
+  }, [router])
 
   const handleLogout = async () => {
-    const supabase = createClient()
-    await supabase.auth.signOut()
+    await fetch('/api/auth/logout', { method: 'POST' })
     router.push('/')
+  }
+
+  const handleSendChat = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!chatInput.trim() || chatLoading) return
+
+    const userMessage = chatInput
+    setMessages([...messages, { role: 'user', content: userMessage }])
+    setChatInput('')
+    setChatLoading(true)
+
+    try {
+      const response = await fetch('/api/chat/prompt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: userMessage }),
+      })
+
+      if (response.ok) {
+        const data = await response.json()
+        setMessages((prev) => [...prev, { role: 'assistant', content: data.reply }])
+      } else {
+        setMessages((prev) => [...prev, { role: 'assistant', content: 'Error: Failed to get response' }])
+      }
+    } catch (err) {
+      setMessages((prev) => [...prev, { role: 'assistant', content: 'Error: Connection failed' }])
+    } finally {
+      setChatLoading(false)
+    }
+  }
+
+  const handleGenerateKey = async () => {
+    try {
+      const response = await fetch('/api/keys/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key_name: `Key-${Date.now()}` }),
+      })
+
+      if (response.ok) {
+        const keysResponse = await fetch('/api/keys/list')
+        if (keysResponse.ok) {
+          const keysData = await keysResponse.json()
+          setApiKeys(keysData.keys || [])
+        }
+      }
+    } catch (err) {
+      console.error('Failed to generate key:', err)
+    }
   }
 
   if (loading) {
@@ -104,6 +160,8 @@ export default function Dashboard() {
     )
   }
 
+  const planLimit = user?.plan_type ? PLAN_LIMITS[user.plan_type] : PLAN_LIMITS.free
+
   return (
     <main className="min-h-screen bg-background">
       <Header />
@@ -112,7 +170,7 @@ export default function Dashboard() {
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 sm:mb-12 gap-4 sm:gap-0">
           <div>
             <h1 className="text-3xl sm:text-4xl md:text-5xl font-bold mb-2 text-balance">DASHBOARD</h1>
-            <p className="text-xs sm:text-sm text-muted-foreground break-all">Welcome, {user?.email}</p>
+            <p className="text-xs sm:text-sm text-muted-foreground">Welcome, {user?.username}</p>
           </div>
           <button
             onClick={handleLogout}
@@ -128,195 +186,233 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* Current Plan Section */}
-        <div className="mb-8 sm:mb-12 border-4 border-foreground p-4 sm:p-6 md:p-8">
-          <h2 className="text-2xl sm:text-3xl font-bold mb-4 sm:mb-6">CURRENT PLAN</h2>
+        <Tabs defaultValue="chat" className="mb-12">
+          <TabsList className="grid w-full grid-cols-4 mb-8">
+            <TabsTrigger value="chat">Chat</TabsTrigger>
+            <TabsTrigger value="plan">Plan</TabsTrigger>
+            <TabsTrigger value="keys">API Keys</TabsTrigger>
+            <TabsTrigger value="instructions">Docs</TabsTrigger>
+          </TabsList>
 
-          {subscription ? (
-            <div className="space-y-3 sm:space-y-4">
-              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center border-b-2 border-foreground pb-3 sm:pb-4 gap-2 sm:gap-0">
-                <span className="text-sm sm:text-base font-bold">Plan Type:</span>
-                <span className="text-sm sm:text-base font-bold uppercase">{subscription.plan_type}</span>
+          {/* Chat Tab */}
+          <TabsContent value="chat" className="space-y-6">
+            <Card className="border-4 border-foreground p-6">
+              <div className="flex items-center gap-2 mb-4">
+                <MessageSquare className="w-6 h-6" />
+                <h2 className="text-2xl font-bold">AI CHAT</h2>
               </div>
-              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center border-b-2 border-foreground pb-3 sm:pb-4 gap-2 sm:gap-0">
-                <span className="text-sm sm:text-base font-bold">Status:</span>
-                <span className="text-sm sm:text-base uppercase">{subscription.status}</span>
+              <p className="text-muted-foreground text-sm mb-6">
+                Chat with Cloudynic AI. Your plan allows {planLimit.requestsPerDay} requests per day.
+              </p>
+
+              <div className="bg-card border-2 border-foreground p-4 rounded-lg mb-4 h-96 overflow-y-auto space-y-4">
+                {messages.length === 0 && (
+                  <div className="flex items-center justify-center h-full text-muted-foreground">
+                    <p>Start a conversation with Cloudynic AI</p>
+                  </div>
+                )}
+                {messages.map((msg, idx) => (
+                  <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                    <div
+                      className={`max-w-xs px-4 py-2 rounded-lg ${
+                        msg.role === 'user'
+                          ? 'bg-foreground text-background'
+                          : 'bg-muted text-foreground border-2 border-foreground'
+                      }`}
+                    >
+                      <p className="text-sm">{msg.content}</p>
+                    </div>
+                  </div>
+                ))}
+                {chatLoading && (
+                  <div className="flex justify-start">
+                    <div className="bg-muted text-foreground border-2 border-foreground px-4 py-2 rounded-lg">
+                      <p className="text-sm">Typing...</p>
+                    </div>
+                  </div>
+                )}
               </div>
-              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center border-b-2 border-foreground pb-3 sm:pb-4 gap-2 sm:gap-0">
-                <span className="text-sm sm:text-base font-bold">Monthly Cost:</span>
-                <span className="text-sm sm:text-base font-bold">${subscription.monthly_cost}/month</span>
+
+              <form onSubmit={handleSendChat} className="flex gap-2">
+                <input
+                  type="text"
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  placeholder="Ask something..."
+                  disabled={chatLoading}
+                  className="flex-1 px-4 py-2 border-2 border-foreground bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-foreground disabled:opacity-50"
+                />
+                <button
+                  type="submit"
+                  disabled={chatLoading || !chatInput.trim()}
+                  className="px-6 py-2 bg-foreground text-background font-bold border-2 border-foreground hover:bg-background hover:text-foreground transition-all disabled:opacity-50"
+                >
+                  SEND
+                </button>
+              </form>
+            </Card>
+          </TabsContent>
+
+          {/* Plan Tab */}
+          <TabsContent value="plan">
+            <Card className="border-4 border-foreground p-6">
+              <div className="flex items-center gap-2 mb-4">
+                <Zap className="w-6 h-6" />
+                <h2 className="text-2xl font-bold">CURRENT PLAN</h2>
               </div>
-              {subscription.renewal_date && (
-                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 sm:gap-0">
-                  <span className="text-sm sm:text-base font-bold">Renewal Date:</span>
-                  <span className="text-sm sm:text-base">
-                    {new Date(subscription.renewal_date).toLocaleDateString()}
-                  </span>
+
+              {subscription ? (
+                <div className="space-y-4">
+                  <div className="flex justify-between items-center border-b-2 border-foreground pb-4">
+                    <span className="font-bold">Plan Type:</span>
+                    <Badge variant="default" className="uppercase">
+                      {subscription.plan_type}
+                    </Badge>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="border-2 border-foreground p-4">
+                      <p className="text-xs text-muted-foreground mb-1">Requests per Day</p>
+                      <p className="text-2xl font-bold">{planLimit.requestsPerDay.toLocaleString()}</p>
+                    </div>
+                    <div className="border-2 border-foreground p-4">
+                      <p className="text-xs text-muted-foreground mb-1">Requests per Minute</p>
+                      <p className="text-2xl font-bold">{planLimit.requestsPerMin}</p>
+                    </div>
+                    <div className="border-2 border-foreground p-4">
+                      <p className="text-xs text-muted-foreground mb-1">API Keys Limit</p>
+                      <p className="text-2xl font-bold">{planLimit.apiKeys}</p>
+                    </div>
+                    <div className="border-2 border-foreground p-4">
+                      <p className="text-xs text-muted-foreground mb-1">Monthly Cost</p>
+                      <p className="text-2xl font-bold">${planLimit.costPerMonth}</p>
+                    </div>
+                  </div>
+
+                  <div className="border-t-2 border-foreground pt-4 mt-6">
+                    <p className="text-xs text-muted-foreground mb-2">Status: {subscription.status}</p>
+                    {subscription.renewal_date && (
+                      <p className="text-xs text-muted-foreground">
+                        Renewal: {new Date(subscription.renewal_date).toLocaleDateString()}
+                      </p>
+                    )}
+                  </div>
+
+                  <Link
+                    href="/pricing"
+                    className="block mt-6 px-6 py-3 bg-foreground text-background font-bold border-2 border-foreground hover:bg-background hover:text-foreground transition-all text-center text-sm"
+                  >
+                    UPGRADE PLAN
+                  </Link>
+                </div>
+              ) : (
+                <div className="text-center py-8">
+                  <p className="text-sm mb-6">You&apos;re on the Free plan.</p>
+                  <Link
+                    href="/pricing"
+                    className="inline-block px-6 py-3 bg-foreground text-background font-bold border-2 border-foreground hover:bg-background hover:text-foreground transition-all text-sm"
+                  >
+                    VIEW PLANS
+                  </Link>
                 </div>
               )}
+            </Card>
+          </TabsContent>
 
-              <Link
-                href="/pricing"
-                className="block mt-6 sm:mt-8 px-4 sm:px-6 py-2 sm:py-3 bg-foreground text-background font-bold border-2 border-foreground hover:bg-background hover:text-foreground transition-all text-center text-xs sm:text-sm"
-              >
-                UPGRADE PLAN
-              </Link>
-            </div>
-          ) : (
-            <div className="text-center">
-              <p className="text-xs sm:text-sm md:text-base mb-4 sm:mb-6">You don&apos;t have a plan yet.</p>
-              <Link
-                href="/pricing"
-                className="inline-block px-4 sm:px-6 py-2 sm:py-3 bg-foreground text-background font-bold border-2 border-foreground hover:bg-background hover:text-foreground transition-all text-xs sm:text-sm"
-              >
-                CHOOSE A PLAN
-              </Link>
-            </div>
-          )}
-        </div>
-
-        {/* API Keys Section */}
-        <div className="border-4 border-foreground p-4 sm:p-6 md:p-8 mb-8 sm:mb-12">
-          <h2 className="text-2xl sm:text-3xl font-bold mb-4 sm:mb-6">API KEYS</h2>
-
-          {apiKeys.length > 0 ? (
-            <div className="space-y-3 sm:space-y-4">
-              {apiKeys.map((key) => (
-                <div
-                  key={key.id}
-                  className="border-2 border-foreground p-3 sm:p-4 bg-card"
+          {/* API Keys Tab */}
+          <TabsContent value="keys">
+            <Card className="border-4 border-foreground p-6">
+              <div className="flex items-center justify-between mb-6">
+                <div className="flex items-center gap-2">
+                  <Code className="w-6 h-6" />
+                  <h2 className="text-2xl font-bold">API KEYS</h2>
+                </div>
+                <button
+                  onClick={handleGenerateKey}
+                  disabled={apiKeys.length >= planLimit.apiKeys}
+                  className="px-4 py-2 bg-foreground text-background font-bold border-2 border-foreground hover:bg-background hover:text-foreground transition-all text-xs disabled:opacity-50"
                 >
-                  <div className="flex flex-col sm:flex-row justify-between items-start gap-2 sm:gap-4 mb-3">
-                    <div className="flex-1 min-w-0">
-                      <p className="text-xs sm:text-sm font-bold text-muted-foreground mb-1 break-all">
-                        {key.key_name || 'Unnamed Key'}
-                      </p>
-                      <p className="font-mono text-xs break-all bg-background p-2 border border-foreground mb-2 overflow-x-auto">
+                  + GENERATE
+                </button>
+              </div>
+
+              {apiKeys.length > 0 ? (
+                <div className="space-y-4">
+                  {apiKeys.map((key) => (
+                    <div key={key.id} className="border-2 border-foreground p-4 bg-card">
+                      <div className="flex justify-between items-start mb-2">
+                        <p className="text-xs font-bold text-muted-foreground">{key.key_name}</p>
+                        <Badge variant={key.is_active ? 'default' : 'secondary'}>
+                          {key.is_active ? 'ACTIVE' : 'INACTIVE'}
+                        </Badge>
+                      </div>
+                      <p className="font-mono text-xs bg-background p-2 border border-foreground mb-2 break-all">
                         {key.api_key}
                       </p>
                       <button
-                        onClick={(e) => {
+                        onClick={() => {
                           navigator.clipboard.writeText(key.api_key)
-                          const btn = e.currentTarget
-                          const originalText = btn.textContent
-                          btn.textContent = '✓ COPIED'
                           setTimeout(() => {
-                            btn.textContent = originalText
-                          }, 1500)
+                            alert('Copied to clipboard!')
+                          }, 100)
                         }}
                         className="text-xs px-2 py-1 border border-foreground hover:bg-foreground hover:text-background transition-all font-bold"
                       >
                         COPY
                       </button>
                     </div>
-                    <span
-                      className={`px-2 sm:px-3 py-1 font-bold text-xs whitespace-nowrap border-2 border-foreground ${
-                        key.is_active
-                          ? 'bg-foreground text-background'
-                          : 'bg-muted text-foreground'
-                      }`}
-                    >
-                      {key.is_active ? 'ACTIVE' : 'INACTIVE'}
-                    </span>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    Created: {new Date(key.created_at).toLocaleDateString()}
-                  </p>
+                  ))}
                 </div>
-              ))}
-            </div>
-          ) : (
-            <p className="text-muted-foreground mb-6">No API keys generated yet.</p>
-          )}
+              ) : (
+                <p className="text-muted-foreground text-sm mb-6">No API keys yet. Generate your first key.</p>
+              )}
+            </Card>
+          </TabsContent>
 
-          {/* Core Technical Reference Block */}
-          <div className="mt-8 border-t-2 border-foreground pt-8">
-            <h3 className="text-xl font-bold mb-4">TECHNICAL SPECIFICATIONS</h3>
-            <div className="bg-card border-2 border-foreground p-4 space-y-4">
-              <div>
-                <p className="font-bold text-xs mb-1">API URL</p>
-                <p className="text-xs font-mono bg-background p-2 border border-foreground break-all">
-                  https://cloudynic.com/api/v1/prompt?prompt=hello
-                </p>
+          {/* Instructions Tab */}
+          <TabsContent value="instructions">
+            <Card className="border-4 border-foreground p-6">
+              <h2 className="text-2xl font-bold mb-6">API INTEGRATION GUIDE</h2>
+
+              <div className="space-y-6">
+                <div>
+                  <h3 className="text-lg font-bold mb-2">1. Get Your API Key</h3>
+                  <p className="text-sm text-muted-foreground mb-2">Generate an API key in the &quot;API Keys&quot; tab above.</p>
+                </div>
+
+                <div>
+                  <h3 className="text-lg font-bold mb-2">2. Basic Request</h3>
+                  <div className="bg-background border-2 border-foreground p-4 font-mono text-xs overflow-x-auto">
+                    {`curl -X POST https://cloudynic.com/api/v1/prompt \\
+  -H "Authorization: Bearer YOUR_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"prompt": "Hello, how are you?"}'`}
+                  </div>
+                </div>
+
+                <div>
+                  <h3 className="text-lg font-bold mb-2">3. Response</h3>
+                  <div className="bg-background border-2 border-foreground p-4 font-mono text-xs overflow-x-auto">
+                    {`{
+  "reply": "I'm doing well, thank you for asking!",
+  "remaining": 9999,
+  "limit": 10000
+}`}
+                  </div>
+                </div>
+
+                <div>
+                  <h3 className="text-lg font-bold mb-2">Rate Limits</h3>
+                  <ul className="text-sm text-muted-foreground space-y-1">
+                    <li>• {planLimit.requestsPerMin} request(s) per minute</li>
+                    <li>• {planLimit.requestsPerDay.toLocaleString()} requests per day</li>
+                    <li>• Rate limit resets daily at 00:00 UTC</li>
+                  </ul>
+                </div>
               </div>
-              <div>
-                <p className="font-bold text-xs mb-1">RATE LIMITS:</p>
-                <ul className="text-xs space-y-1 ml-4 list-disc text-muted-foreground">
-                  <li><strong className="text-foreground">Free:</strong> 1 req/min, 100 req/day (IP-based)</li>
-                </ul>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* New 1-Click Complete Setup Deployment Manual */}
-        <div className="border-4 border-foreground p-4 sm:p-6 md:p-8 bg-card">
-          <h2 className="text-2xl sm:text-3xl font-bold mb-4 sm:mb-6">DEPLOY YOUR CHAT APP AND EARN WITH ADS.</h2>
-          <div className="space-y-6 text-sm">
-            
-            {/* Step 1 */}
-            <div className="flex gap-4">
-              <div className="flex-shrink-0 h-6 w-6 rounded-full bg-foreground text-background flex items-center justify-center font-bold text-xs">1</div>
-              <div className="flex-1">
-                <p className="font-bold text-base mb-1">Fork the Official Repository</p>
-                <p className="text-muted-foreground mb-3">Sign up or log in to your account at GitHub. Then, visit the official source repository and click the <strong>"Fork"</strong> button in the top-right to copy it into your own account.</p>
-                <a 
-                  href="https://github.com/CLOUDYNIC-DEV/AI-APP" 
-                  target="_blank" 
-                  rel="noopener noreferrer"
-                  className="inline-block text-xs font-bold px-3 py-1.5 border-2 border-foreground bg-background hover:bg-foreground hover:text-background transition-all"
-                >
-                  VISIT REPOSITORY ↗
-                </a>
-              </div>
-            </div>
-
-            {/* Step 2 */}
-            <div className="flex gap-4">
-              <div className="flex-shrink-0 h-6 w-6 rounded-full bg-foreground text-background flex items-center justify-center font-bold text-xs">2</div>
-              <div className="flex-1">
-                <p className="font-bold text-base mb-1">Configure Your Back-End Variables</p>
-                <p className="text-muted-foreground mb-3">Inside your newly forked repository, navigate to and edit the file located at <code className="bg-background px-1 border font-mono text-xs">netlify/functions/chat.js</code>. You can edit these configurations on that code to make it yours.</p>
-                <pre className="text-xs bg-background p-3 border border-foreground font-mono overflow-x-auto whitespace-pre block leading-relaxed">
-{`// CHAT API CONFIGURATION
-const API_KEY = "YOUR_API_KEY_HERE"; // Copy an active key from the section above
-const TRAIN_TEXT = "Your Custom Training System Context Instructions";
-const APP_NAME = "Your Premium AI Brand Name";
-
-// ADSENSE MONETIZATION CONFIGURATION
-const ADSENSE_PUBLISHER_ID = "ca-pub-XXXXXXXXXXXXXXXX"; // Your real AdSense Pub ID
-const TOP_BANNER_AD_SLOT   = "1234567890";            // Your top layout ad unit slot
-const BOTTOM_BOX_AD_SLOT   = "0987654321";            // Your bottom layout ad unit slot`}
-                </pre>
-              </div>
-            </div>
-
-            {/* Step 3 */}
-            <div className="flex gap-4">
-              <div className="flex-shrink-0 h-6 w-6 rounded-full bg-foreground text-background flex items-center justify-center font-bold text-xs">3</div>
-              <div className="flex-1">
-                <p className="font-bold text-base mb-1">Deploy Live to Netlify</p>
-                <p className="text-muted-foreground mb-2">Go to <a href="https://www.netlify.com" target="_blank" rel="noopener noreferrer" className="underline font-bold text-foreground">Netlify.com</a> and sign up or sign in using your <strong>GitHub account</strong>. Click <strong>"Add new site"</strong>, choose <strong>"Import an existing project"</strong>, select your newly forked repository, and click <strong>"Deploy"</strong>.</p>
-                <p className="text-xs text-muted-foreground bg-background p-2 border border-dashed border-foreground"> Boom! Your dynamic, chat web app infrastructure initializes instantly and goes live. Now you can access it using the URL highlighted. </p>
-              </div>
-            </div>
-
-            {/* Step 4 */}
-            <div className="flex gap-4">
-              <div className="flex-shrink-0 h-6 w-6 rounded-full bg-foreground text-background flex items-center justify-center font-bold text-xs">4</div>
-              <div className="flex-1">
-                <p className="font-bold text-base mb-1">Production Domain &amp; Monetization Approval</p>
-                <ul className="list-disc ml-4 space-y-2 text-muted-foreground">
-                  <li><strong>Custom Branding:</strong> Inside your site dashboard on Netlify, access your <strong>Domain Configuration</strong> settings to point the platform to your custom domain if you own one.</li>
-                  <li><strong>Activate Monetization Earnings:</strong> Sign up for an account at <a href="https://adsense.google.com" target="_blank" rel="noopener noreferrer" className="underline font-bold text-foreground">Google AdSense</a>. Once your custom domain is approved by Google, fill out your unique publisher variable blocks in step 2. Ad units will launch automatically to begin gathering ad revenue stream earnings. And you are totally done.</li>
-                  <li>Now you can sit on your sofa and rest while the app is earning without any work. Enjoy your earnings.</li>
-                </ul>
-              </div>
-            </div>
-
-          </div>
-        </div>
-
+            </Card>
+          </TabsContent>
+        </Tabs>
       </div>
     </main>
   )

@@ -3,10 +3,10 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { createClient } from '@/lib/supabase/client'
 
 export default function SignUp() {
   const router = useRouter()
+  const [username, setUsername] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
@@ -27,24 +27,26 @@ export default function SignUp() {
       return
     }
 
+    if (username.length < 3) {
+      setError('Username must be at least 3 characters')
+      return
+    }
+
     setLoading(true)
 
     try {
-      const supabase = createClient()
-      const { error: signUpError } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          emailRedirectTo:
-            process.env.NEXT_PUBLIC_DEV_SUPABASE_REDIRECT_URL ??
-            `${window.location.origin}/auth/callback`,
-        },
+      const response = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, email, password }),
       })
 
-      if (signUpError) {
-        setError(signUpError.message)
+      const data = await response.json()
+
+      if (!response.ok) {
+        setError(data.message || 'Sign up failed')
       } else {
-        router.push('/auth/sign-up-success')
+        router.push('/auth/login?registered=true')
       }
     } catch (err) {
       setError('An error occurred during sign up')
@@ -67,6 +69,21 @@ export default function SignUp() {
               <p className="text-sm text-destructive">{error}</p>
             </div>
           )}
+
+          <div>
+            <label htmlFor="username" className="block text-sm font-bold mb-2">
+              USERNAME
+            </label>
+            <input
+              id="username"
+              type="text"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              required
+              disabled={loading}
+              className="w-full px-4 py-3 border-2 border-foreground bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-foreground disabled:opacity-50"
+            />
+          </div>
 
           <div>
             <label htmlFor="email" className="block text-sm font-bold mb-2">

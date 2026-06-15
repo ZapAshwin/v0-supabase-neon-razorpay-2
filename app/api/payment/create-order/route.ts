@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Razorpay from 'razorpay'
-import { createClient } from '@/lib/supabase/server'
+import { getAuthUser } from '@/lib/auth'
 
 export async function POST(req: NextRequest) {
   try {
@@ -12,27 +12,37 @@ export async function POST(req: NextRequest) {
       )
     }
 
+    // Get authenticated user
+    const token = req.cookies.get('auth_token')?.value
+    if (!token) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
+    const user = await getAuthUser(token)
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
     const razorpay = new Razorpay({
       key_id: process.env.RAZORPAY_KEY_ID,
       key_secret: process.env.RAZORPAY_KEY_SECRET,
     })
 
-    const { plan, amount, user_id } = await req.json()
+    const { plan, amount } = await req.json()
 
-    if (!plan || !amount || !user_id) {
+    if (!plan || !amount) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
     }
 
-    // Create order (amount in cents for USD)
-    // Receipt must be max 40 characters
-    const receipt = `${user_id.substring(0, 15)}-${Date.now()}`.substring(0, 40)
+    // Create order (amount in cents)
+    const receipt = `${user.id.substring(0, 15)}-${Date.now()}`.substring(0, 40)
     const order = await razorpay.orders.create({
-      amount: Math.round(amount * 100), // Amount in cents
+      amount: Math.round(amount * 100),
       currency: 'USD',
       receipt: receipt,
       notes: {
         plan,
-        user_id,
+        user_id: user.id,
       },
     })
 
